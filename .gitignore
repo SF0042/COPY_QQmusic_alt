@@ -2,4 +2,6 @@
 .qqmusic_settings.json
 .netease_auth.json
 qqmusic_login_qr.png
+music_login_qr.png
+qqmusic_tui_*_login_qr.png
 __pycache__/
