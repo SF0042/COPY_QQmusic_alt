@@ -76,7 +76,7 @@ play [歌曲序号]                播放当前队列；不填序号时播放当
 play playlist <歌单序号>        打开歌单并播放第一首
 next | prev                    手动切到下一首/上一首；播完也会自动切歌
 pause | resume | stop          控制播放
-lyric [序号]                   实时显示歌词；播放结束会自动切歌，Ctrl+C 返回命令行
+lyric [序号]                   三行实时歌词；播放结束会自动切歌，Ctrl+C 返回命令行
 playlist                       同步并显示我的歌单
 playlist <歌单序号|id>         打开歌单到歌曲队列
 open <歌单序号|id>             同 playlist <歌单序号|id>
@@ -88,6 +88,8 @@ delete <歌单序号>              删除歌单
 download <歌曲序号>            下载歌曲
 settings                       显示当前设置 JSON
 ```
+
+如果歌曲因为版权、会员、地区或播放链接问题不可播放，TUI 会打印原因并自动跳到下一首。
 
 ## 登录
 

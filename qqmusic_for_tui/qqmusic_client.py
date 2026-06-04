@@ -2505,6 +2505,29 @@ def terminal_song_line(song: Song) -> str:
     return "  ".join(parts)
 
 
+def lyric_window_lines(lines: list[tuple[int, str]], current_index: int) -> list[str]:
+    items: list[str] = []
+    for offset, label in ((-1, "上一句"), (0, "当前"), (1, "下一句")):
+        index = current_index + offset
+        if 0 <= index < len(lines):
+            line_time, text = lines[index]
+            content = f"{label} {format_milliseconds(line_time)}  {text}"
+        else:
+            content = f"{label} --:--"
+        if offset == 0:
+            items.append(f"\033[1m> {content}\033[0m")
+        else:
+            items.append(f"\033[2m  {content}\033[0m")
+    return items
+
+
+def print_lyric_window(lines: list[tuple[int, str]], current_index: int, already_rendered: bool) -> None:
+    if already_rendered:
+        print("\033[3F", end="")
+    for line in lyric_window_lines(lines, current_index):
+        print(f"\033[K{line}")
+
+
 def parse_one_based_index(value: str, size: int, label: str) -> int:
     try:
         index = int(value)
@@ -2760,7 +2783,7 @@ class TerminalMusicApp:
   play playlist <歌单序号>        打开歌单并播放第一首
   next | prev                    手动切到下一首/上一首；播完也会自动切歌
   pause | resume | stop          控制播放
-  lyric [序号]                   实时显示歌词；播完自动切歌，Ctrl+C 返回
+  lyric [序号]                   三行实时歌词；播完自动切歌，Ctrl+C 返回
   playlist                       同步并显示我的歌单
   playlist <歌单序号|id>         打开歌单到歌曲队列
   open <歌单序号|id>             同 playlist <歌单序号|id>
@@ -2771,6 +2794,8 @@ class TerminalMusicApp:
   delete <歌单序号>              删除歌单
   download <歌曲序号>            下载歌曲到设置中的下载目录
   quit                           退出
+
+提示: 遇到版权、会员、地区或播放链接问题时，会自动跳到下一首。
 """.strip()
         )
 
@@ -2967,17 +2992,43 @@ class TerminalMusicApp:
             return
         self.play_song_at(self.selected_song_index(args, default_current=True))
 
-    def play_song_at(self, index: int) -> None:
+    def next_index_after_unplayable(self, failed_index: int, attempted: set[int]) -> int:
+        if not self.songs or len(attempted) >= len(self.songs):
+            return -1
+        candidates = [index for index in range(len(self.songs)) if index not in attempted]
+        if not candidates:
+            return -1
+        if self.play_mode == "随机播放":
+            return random.choice(candidates)
+        for step in range(1, len(self.songs) + 1):
+            candidate = (failed_index + step) % len(self.songs)
+            if candidate not in attempted:
+                return candidate
+        return -1
+
+    def play_song_at(self, index: int, attempted: set[int] | None = None) -> bool:
         if not 0 <= index < len(self.songs):
             raise QQMusicError("歌曲序号超出范围")
+        attempted = set(attempted or set())
+        attempted.add(index)
         song = self.songs[index]
-        url = self.api.song_url(song.mid, self.quality, self.auth.get("cookie", ""), song.media_mid)
-        self.player.play(url)
+        try:
+            url = self.api.song_url(song.mid, self.quality, self.auth.get("cookie", ""), song.media_mid)
+            self.player.play(url)
+        except (QQMusicError, OSError) as exc:
+            print(f"不可播放，跳过: {song.display}")
+            print(f"原因: {exc}")
+            next_index = self.next_index_after_unplayable(index, attempted)
+            if next_index < 0:
+                print("队列里没有找到可播放的下一首")
+                return False
+            return self.play_song_at(next_index, attempted)
         self.current_song_index = index
         self.playback_started_at = time.monotonic()
         self.playback_token += 1
         self.start_playback_monitor(self.playback_token)
         print(f"正在播放: {song.display}")
+        return True
 
     def start_playback_monitor(self, token: int) -> None:
         threading.Thread(target=self.monitor_playback, args=(token,), daemon=True).start()
@@ -3061,7 +3112,8 @@ class TerminalMusicApp:
         else:
             print("这首歌当前未播放，将从 0:00 开始预览歌词。按 Ctrl+C 返回命令行。")
 
-        last_line_index = -1
+        last_line_index: int | None = None
+        lyric_window_rendered = False
         completion_reported = False
         self.lyric_mode_active = True
         try:
@@ -3087,24 +3139,31 @@ class TerminalMusicApp:
                         else:
                             break
 
-                    if line_index >= 0 and line_index != last_line_index:
-                        line_time, text = lines[line_index]
-                        print(f"\r\033[K{format_milliseconds(line_time)}  {text}", end="", flush=True)
+                    if line_index != last_line_index:
+                        print_lyric_window(lines, line_index, lyric_window_rendered)
+                        lyric_window_rendered = True
                         last_line_index = line_index
 
                 if follows_current_song and self.player.has_ended():
                     next_index = self.next_index_for_auto_advance()
                     if next_index < 0:
-                        print("\r\033[K播放完成，按 Ctrl+C 返回命令行。", flush=True)
+                        if lyric_window_rendered:
+                            print("\033[3F\033[J", end="")
+                            lyric_window_rendered = False
+                        print("播放完成，按 Ctrl+C 返回命令行。", flush=True)
                         completion_reported = True
                         continue
                     print()
-                    self.play_song_at(next_index)
-                    song, lines = load_lyric(next_index)
+                    if not self.play_song_at(next_index):
+                        print("播放完成，按 Ctrl+C 返回命令行。", flush=True)
+                        completion_reported = True
+                        continue
+                    song, lines = load_lyric(self.current_song_index)
                     print(f"实时歌词: {song.display}")
                     if not lines:
                         print("当前歌曲没有可同步歌词，仍会在歌曲结束后自动切歌。")
-                    last_line_index = -1
+                    last_line_index = None
+                    lyric_window_rendered = False
                     continue
                 if not follows_current_song and position > lines[-1][0] + 3000:
                     print()
