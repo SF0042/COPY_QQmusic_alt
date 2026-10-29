@@ -1,9 +1,10 @@
 # Music
 
-这个仓库现在包含四个客户端方向：
+这个仓库现在包含五个客户端方向：
 
 - `qqmusic_for_pc/`：原 Tkinter PC 客户端。
 - `qqmusic_for_web_browser/`：本地 Web 后端 + 浏览器前端，复用 PC 端的 QQ 音乐 / 网易云音乐接口。
+- `qqmusic_for_moon_cube_sea/`：月下方海，另一个浏览器前端，复用 `qqmusic_for_web_browser` 的后端，歌曲是月光下海面上的方块。
 - `qqmusic_for_andriod/`：Kotlin + Jetpack Compose Android 客户端。
 - `qqmusic_for_ios/`：SwiftUI + AVPlayer iOS 客户端源码。
 
@@ -60,5 +61,6 @@ QQMUSIC_WEB_HOST=0.0.0.0 python3 server.py
 
 - PC：`qqmusic_for_pc/.qqmusic_auth.json`、`qqmusic_for_pc/.qqmusic_settings.json`
 - Web：`qqmusic_for_web_browser/.qqmusic_auth.json`、`qqmusic_for_web_browser/.qqmusic_settings.json`
+- 月下方海：`qqmusic_for_moon_cube_sea/.qqmusic_auth.json`、`qqmusic_for_moon_cube_sea/.netease_auth.json`、`qqmusic_for_moon_cube_sea/.qqmusic_settings.json`
 - Android：App 沙盒 `filesDir/qqmusic_auth.json`、`filesDir/qqmusic_settings.json`
 - iOS：App Documents `qqmusic_auth.json`、`qqmusic_settings.json`

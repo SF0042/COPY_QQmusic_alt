@@ -159,6 +159,16 @@
   }
   .drop-hint p { margin: 0; font-family: var(--display); font-size: 22px; letter-spacing: 0.2em; color: var(--ink); }
   .imp-current { border-left: 1px solid rgba(var(--moon-rgb), 0.7); padding-left: 10px; }
+  .imp-sec { display: grid; gap: 8px; padding-bottom: 12px; box-shadow: inset 0 -1px 0 rgba(214, 222, 238, 0.08); }
+  .imp-acct { display: grid; gap: 8px; }
+  .panel h3, .imp-sub { margin: 4px 0 0; font-family: var(--ui); font-weight: 400; font-size: 12px; letter-spacing: 0.16em; color: rgba(var(--moon-rgb), 0.85); }
+  .imp-input {
+    flex: 1 1 120px; min-width: 0; font: inherit; font-family: var(--ui); font-size: 13px; color: var(--ink);
+    background: rgba(214, 222, 238, 0.06); border: 0; border-radius: 8px; padding: 7px 10px;
+    box-shadow: inset 0 0 0 1px rgba(214, 222, 238, 0.12);
+  }
+  .imp-input:focus { outline: none; box-shadow: inset 0 0 0 1px rgba(var(--moon-rgb), 0.8); }
+  .imp-qr { width: 180px; height: 180px; justify-self: center; background: #fff; padding: 8px; border-radius: 10px; }
   .imp-body a { color: var(--ink); }
   /* Buttons as moonlit words: no frame, a soft halo so they read over bright sky, a line of light under the
      word on hover, and a small moon before the word while a mode is on. They take the scene's light colour. */
@@ -1544,7 +1554,7 @@
   function trackFailed(S) {
     if (S.failed) return;
     S.failed = true;
-    S.s.failText = '无法播放 · 浏览器可能不支持这个格式';
+    S.s.failText = S.t && S.t.remote ? '无法播放 · 可能需要会员或版权受限' : '无法播放 · 浏览器可能不支持这个格式';
     facesFor = null;
     shownPhase = '';
     setTimeout(() => { if (session === S) goTrack(1); }, 2600);
@@ -1558,9 +1568,15 @@
   // they stay on time through seeking and pausing, and do not depend on the screen's frame rate.
   const beatCache = new WeakMap();                    // song file → Promise of its beats
   function beatsFor(t) {
-    if (!t || !t.blob) return Promise.resolve(null);
-    if (!beatCache.has(t.blob)) beatCache.set(t.blob, analyzeBeats(t.blob).catch(() => null));
-    return beatCache.get(t.blob);
+    if (!t || (!t.blob && !t.remote)) return Promise.resolve(null);
+    const key = t.blob || t;
+    if (!beatCache.has(key)) {
+      // local files are read directly; account songs are fetched once through the backend for analysis
+      const src = t.blob ? Promise.resolve(t.blob)
+        : fetch(t.url).then((r) => { if (!r.ok) throw new Error('stream ' + r.status); return r.blob(); });
+      beatCache.set(key, src.then(analyzeBeats).catch(() => null));
+    }
+    return beatCache.get(key);
   }
   async function analyzeBeats(blob) {
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -1741,6 +1757,19 @@
     // Lyrics: timed lines (from an .lrc file or timed embedded lyrics) or plain text spread over the song
     if (t.lrc && t.lrc.length) { S.lrc = t.lrc; s.lyrics = t.lrc.map((l) => l.text); }
     else if (t.plain && t.plain.length) { S.plain = t.plain; if (t.duration) spreadLyrics(S); }
+    else if (t.remote && !t.lyricChecked) {
+      fetch('/api/lyric?' + new URLSearchParams({ mid: t.mid }), { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((d) => {
+          t.lyricChecked = true;
+          if (!d || !d.ok) return;
+          const lines = (d.lines || []).map((l) => ({ t: (l.time_ms || 0) / 1000, text: String(l.text || '').trim() })).filter((l) => l.text);
+          if (!lines.length) return;
+          t.lrc = lines;
+          if (session === S) { S.lrc = lines; s.lyrics = lines.map((l) => l.text); loadGlyphs(s); }
+        })
+        .catch(() => {});
+    }
     // The cover goes on the cube's left face, and its colour tints the scene
     if (t.coverUrl) {
       const img = new Image();
@@ -3677,7 +3706,7 @@
   }
   const txDone = (tx) => new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error); });
   const reqP = (rq) => new Promise((resolve, reject) => { rq.onsuccess = () => resolve(rq.result); rq.onerror = () => reject(rq.error); });
-  async function saveLibrary(data) {
+  async function saveLibrary(data, quiet) {
     const db = await openDB();
     try {
       let tx = db.transaction(STORE, 'readwrite');
@@ -3687,9 +3716,13 @@
       for (let k = 0; k < data.tracks.length; k++) {
         const t = data.tracks[k];
         tx = db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).put({ title: t.title, artist: t.artist, album: t.album, lrc: t.lrc, plain: t.plain, duration: t.duration || 0, audio: t.blob, cover: t.coverBlob || null }, 'song:' + k);
+        tx.objectStore(STORE).put({
+          title: t.title, artist: t.artist, album: t.album, lrc: t.lrc, plain: t.plain, duration: t.duration || 0,
+          audio: t.blob || null, cover: t.coverBlob || null,
+          remote: !!t.remote, mid: t.mid || '', media_mid: t.media_mid || '', coverSrc: t.coverSrc || ''
+        }, 'song:' + k);
         await txDone(tx);
-        if (k % 10 === 0) setImportStatus('正在保存到浏览器 ' + (k + 1) + ' / ' + data.tracks.length + ' 首…');
+        if (!quiet && k % 10 === 0) setImportStatus('正在保存到浏览器 ' + (k + 1) + ' / ' + data.tracks.length + ' 首…');
       }
       tx = db.transaction(STORE, 'readwrite');
       tx.objectStore(STORE).put({ name: data.name, count: data.tracks.length }, 'meta');
@@ -3709,7 +3742,11 @@
       const tracks = [];
       for (let k = 0; k < meta.count; k++) {
         const r = await reqP(db.transaction(STORE, 'readonly').objectStore(STORE).get('song:' + k));
-        if (r && r.audio) tracks.push({ title: r.title, artist: r.artist, album: r.album, lrc: r.lrc, plain: r.plain, duration: r.duration, blob: r.audio, coverBlob: r.cover });
+        if (r && (r.audio || (r.remote && r.mid))) tracks.push({
+          title: r.title, artist: r.artist, album: r.album, lrc: r.lrc, plain: r.plain, duration: r.duration,
+          blob: r.audio || null, coverBlob: r.cover || null,
+          remote: !!r.remote, mid: r.mid, media_mid: r.media_mid, coverSrc: r.coverSrc
+        });
       }
       return tracks.length ? { name: meta.name, tracks } : null;
     } finally { db.close(); }
@@ -3718,12 +3755,19 @@
   // ---------- putting songs on the sea ----------
   function releaseURLs(data) {
     if (!data) return;
-    data.tracks.forEach((t) => { if (t.url) URL.revokeObjectURL(t.url); if (t.coverUrl) URL.revokeObjectURL(t.coverUrl); });
+    const free = (u) => { if (u && u.startsWith('blob:')) URL.revokeObjectURL(u); };
+    data.tracks.forEach((t) => { free(t.url); free(t.coverUrl); });
   }
   function showOnSea(data) {
     data.tracks.forEach((t) => {
-      t.url = URL.createObjectURL(t.blob);
-      t.coverUrl = t.coverBlob ? URL.createObjectURL(t.coverBlob) : '';
+      if (t.remote) {
+        // account songs play through the music backend (audio and covers relayed from the same origin)
+        t.url = '/api/stream?' + new URLSearchParams({ mid: t.mid, media_mid: t.media_mid || '', quality: '320' });
+        t.coverUrl = t.coverSrc ? '/api/image?url=' + encodeURIComponent(t.coverSrc) : '';
+      } else {
+        t.url = URL.createObjectURL(t.blob);
+        t.coverUrl = t.coverBlob ? URL.createObjectURL(t.coverBlob) : '';
+      }
     });
     if (locked >= 0 && trackOfCube.has(locked)) unlock();
     releaseURLs(imported);
@@ -3797,12 +3841,166 @@
   });
   document.body.append(pickFiles, pickDir);
 
+  // ---------- account playlists (only when the page is opened through the music backend) ----------
+  // Uses the backend in qqmusic_for_web_browser (QQ 音乐 / 网易云音乐): login, playlists, songs, lyrics.
+  let backendOK = null, acctRun = 0;
+  async function api(path, opts = {}) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), opts.timeout || 15000);
+    try {
+      const res = await fetch(path, {
+        method: opts.method || 'GET', signal: ctl.signal, cache: 'no-store',
+        headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      });
+      clearTimeout(timer);                             // the limit is for reaching the backend, not for reading its reply
+      let data;
+      try { data = await res.json(); } catch (err) { throw new Error('没有连上音乐后端'); }
+      if (!data.ok) throw new Error(data.error || '请求失败');
+      return data;
+    } finally { clearTimeout(timer); }
+  }
+  async function refreshAccount(box) {
+    const run = ++acctRun;
+    if (backendOK === false) { box.hidden = true; return; }
+    const stat = h('p', { className: 'status' });
+    const body = h('div', { className: 'imp-acct' });
+    const say = (t) => { stat.textContent = t; };
+    box.replaceChildren(h('h3', { textContent: '账号歌单' }), stat, body);
+    say('正在连接音乐后端…');
+    let st;
+    try {
+      st = await api('/api/state', { timeout: 6000 });
+      backendOK = true;
+      const sub = importBody.querySelector('.imp-sub');
+      if (sub) sub.hidden = false;
+    }
+    catch (err) { if (run === acctRun) { backendOK = false; box.hidden = true; } return; }
+    if (run !== acctRun) return;
+    box.hidden = false;
+    const other = st.platform === 'netease' ? 'qqmusic' : 'netease';
+    const switchBtn = h('button', { className: 'imp-btn', type: 'button', textContent: '换到' + (other === 'netease' ? '网易云音乐' : 'QQ 音乐'),
+      onclick: async () => { try { await api('/api/settings', { method: 'PUT', body: { platform: other } }); } catch (err) { say(err.message); return; } refreshAccount(box); } });
+
+    if (!st.logged_in) {
+      say('还没有登录' + (st.platform_name || ''));
+      if (st.platform === 'qqmusic') {
+        body.append(
+          h('p', {}, '用手机扫码登录后，就能把你的歌单放到海面上。'),
+          h('div', { className: 'imp-row' },
+            h('button', { className: 'imp-btn', type: 'button', textContent: 'QQ 扫码', onclick: () => startQR('qq', box, run) }),
+            h('button', { className: 'imp-btn', type: 'button', textContent: '微信扫码', onclick: () => startQR('wechat', box, run) }),
+            switchBtn));
+      } else {
+        const phone = h('input', { className: 'imp-input', id: 'impPhone', type: 'tel', placeholder: '手机号', autocomplete: 'tel' });
+        const code = h('input', { className: 'imp-input', id: 'impCode', type: 'text', inputMode: 'numeric', placeholder: '验证码', autocomplete: 'one-time-code' });
+        const cookie = h('input', { className: 'imp-input', id: 'impCookie', type: 'text', placeholder: '或粘贴网页登录 Cookie' });
+        body.append(
+          h('div', { className: 'imp-row' }, phone,
+            h('button', { className: 'imp-btn', type: 'button', textContent: '发送验证码', onclick: async () => {
+              if (!phone.value.trim()) { say('请先填写手机号'); return; }
+              try { await api('/api/netease/captcha/send', { method: 'POST', body: { phone: phone.value.trim(), country_code: '86' } }); say('验证码已发送'); }
+              catch (err) { say(err.message); }
+            } })),
+          h('div', { className: 'imp-row' }, code,
+            h('button', { className: 'imp-btn', type: 'button', textContent: '登录', onclick: async () => {
+              try { await api('/api/netease/login/phone', { method: 'POST', body: { phone: phone.value.trim(), captcha: code.value.trim(), country_code: '86' } }); refreshAccount(box); }
+              catch (err) { say(err.message); }
+            } })),
+          h('div', { className: 'imp-row' }, cookie,
+            h('button', { className: 'imp-btn', type: 'button', textContent: '用 Cookie 登录', onclick: async () => {
+              try { await api('/api/netease/login/cookie', { method: 'POST', body: { cookie: cookie.value.trim() } }); refreshAccount(box); }
+              catch (err) { say(err.message); }
+            } })),
+          h('div', { className: 'imp-row' }, switchBtn));
+      }
+      return;
+    }
+
+    say('已登录 · ' + (st.display_name || st.account) + ' · ' + st.platform_name);
+    body.append(h('div', { className: 'imp-row' }, switchBtn,
+      h('button', { className: 'imp-btn', type: 'button', textContent: '退出登录', onclick: async () => {
+        try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* already out */ }
+        refreshAccount(box);
+      } })));
+    let lists;
+    try { lists = (await api('/api/playlists')).playlists || []; }
+    catch (err) { if (run === acctRun) say('读取歌单失败：' + err.message); return; }
+    if (run !== acctRun) return;
+    if (!lists.length) { body.append(h('p', {}, '这个账号还没有歌单。')); return; }
+    body.append(h('p', {}, '选一个歌单放到海面上：'));
+    lists.forEach((pl) => body.append(h('button', { className: 'imp-item', type: 'button', onclick: () => importPlaylist(pl, st, box, run, say) },
+      h('span', { textContent: pl.name }), h('span', { textContent: (pl.song_count || 0) + ' 首' }))));
+  }
+
+  async function startQR(provider, box, run) {
+    let d;
+    const body = box.querySelector('.imp-acct'), stat = box.querySelector('.status');
+    try { d = await api('/api/login/start', { method: 'POST', body: { provider } }); } catch (err) { stat.textContent = err.message; return; }
+    if (run !== acctRun) return;
+    body.replaceChildren(
+      h('img', { className: 'imp-qr', src: d.image, alt: provider === 'wechat' ? '微信登录二维码' : 'QQ 登录二维码' }),
+      h('p', {}, '用手机' + (provider === 'wechat' ? '微信' : ' QQ ') + '扫一扫，然后在手机上确认登录。'));
+    stat.textContent = '等待扫码…';
+    const LABEL = { waiting: '等待扫码…', confirming: '已扫码，请在手机上确认', expired: '二维码已过期', cancelled: '已取消' };
+    while (run === acctRun) {
+      await new Promise((r) => setTimeout(r, 2000));
+      if (run !== acctRun) return;
+      let p;
+      try { p = await api('/api/login/poll?id=' + encodeURIComponent(d.id)); } catch (err) { stat.textContent = err.message; return; }
+      if (p.state === 'done') { refreshAccount(box); return; }
+      stat.textContent = LABEL[p.state] || '等待扫码…';
+      if (p.state === 'expired' || p.state === 'cancelled') {
+        body.append(h('div', { className: 'imp-row' }, h('button', { className: 'imp-btn', type: 'button', textContent: '重新获取二维码', onclick: () => startQR(provider, box, acctRun) })));
+        return;
+      }
+    }
+  }
+
+  async function importPlaylist(pl, st, box, run, say) {
+    if (busy) return;
+    busy = true;
+    box.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    const songs = [];
+    let total = pl.song_count || 0;
+    try {
+      while (run === acctRun && songs.length < MAX_TRACKS) {
+        say('正在读取《' + pl.name + '》 ' + songs.length + (total ? ' / ' + total : '') + ' 首…');
+        const page = await api('/api/playlists/' + encodeURIComponent(pl.id) + '/songs?begin=' + songs.length + '&count=100', { timeout: 30000 });
+        const got = page.songs || [];
+        total = page.total || total;
+        songs.push(...got);
+        if (!got.length || (total && songs.length >= total)) break;
+      }
+    } catch (err) {
+      busy = false;
+      if (run === acctRun) { say('读取失败：' + err.message); box.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }
+      return;
+    }
+    const tracks = songs.filter((x) => x && x.mid).map((x) => ({
+      remote: true, title: x.title, artist: x.singers || '', album: x.album || '', mid: x.mid, media_mid: x.media_mid || '',
+      duration: x.duration || 0, coverSrc: x.cover || '', lrc: null, plain: null
+    }));
+    busy = false;
+    if (!tracks.length) { say('这个歌单里没有可以播放的歌'); renderImport(true); return; }
+    const data = { name: pl.name, tracks };
+    showOnSea(data);
+    // account songs are saved as references only (no audio), so this is quick; finish before the final message
+    if (remember) await saveLibrary(data, true).catch(() => {}); else clearLibrary().catch(() => {});
+    renderImport(true);
+    setImportStatus('已导入《' + pl.name + '》 ' + cubeOfTrack.length + ' 首（' + st.platform_name + '），放在镜头前方的海面上');
+  }
+
   function renderImport(keepStatus) {
     importBody.replaceChildren();
     if (!keepStatus) setImportStatus(imported ? '海面上有 ' + cubeOfTrack.length + ' 首你的歌' : '把电脑里的音乐放到海面上');
     const rememberBox = h('input', { type: 'checkbox', id: 'impRemember', checked: remember, disabled: busy,
       onchange: () => { remember = rememberBox.checked; try { localStorage.setItem('moonCubeSea.remember', remember ? '1' : '0'); } catch (err) { /* ignore */ } } });
+    const acctBox = h('section', { className: 'imp-sec', hidden: backendOK !== true });
+    importBody.append(acctBox);
+    if (backendOK !== false) refreshAccount(acctBox);
     importBody.append(
+      h('h3', { className: 'imp-sub', hidden: backendOK !== true, textContent: '本地音乐' }),
       h('div', { className: 'imp-row' },
         h('button', { className: 'imp-btn', type: 'button', textContent: '选择音乐文件', disabled: busy, onclick: () => pickFiles.click() }),
         h('button', { className: 'imp-btn', type: 'button', textContent: '选择整个文件夹', disabled: busy, onclick: () => pickDir.click() })),
