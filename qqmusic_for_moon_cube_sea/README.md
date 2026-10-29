@@ -9,12 +9,24 @@
 
 ## 启动
 
+Windows（PowerShell）：
+
+```powershell
+cd qqmusic_for_moon_cube_sea
+python server.py
+# 命令不存在时用：py server.py
+# 换端口：$env:QQMUSIC_WEB_PORT = "8787"; python server.py
+```
+
+macOS / Linux：
+
 ```bash
 cd qqmusic_for_moon_cube_sea
 python3 server.py
+# 换端口：QQMUSIC_WEB_PORT=8787 python3 server.py
 ```
 
-然后打开 `http://127.0.0.1:8765`。可选端口：`QQMUSIC_WEB_PORT=8787 python3 server.py`。
+然后打开 `http://127.0.0.1:8765`。
 
 登录信息保存在本文件夹里（`.qqmusic_auth.json`、`.netease_auth.json`、`.qqmusic_settings.json`），不和 `qqmusic_for_web_browser` 共用，已被 `.gitignore` 排除。
 
@@ -40,8 +52,10 @@ python3 server.py
 
 修改页面后重新构建：
 
-```bash
-python3 tools/build_offline.py src/sea.body.html vendor/three.min.js static/index.html
+```powershell
+python tools/build_offline.py src/sea.body.html vendor/three.min.js static/index.html
 ```
+
+（macOS / Linux 把 `python` 换成 `python3`。）
 
 three.js 采用 MIT 许可证，见 `vendor/THREE_LICENSE`。
